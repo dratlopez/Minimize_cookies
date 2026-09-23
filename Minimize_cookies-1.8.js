@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2026 DrATLopez Andino Tur López.
+  Copyright (c) 2026 DrATLopez Antonio Tur López.
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
