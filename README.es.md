@@ -72,7 +72,7 @@ El script nunca hace clics a ciegas. Recorre esta lista de prioridad y se detien
 
 ## 📄 Licencia
 
-Copyright © 2026 **DrATLopez Andino Tur López**.
+Copyright © 2026 **DrATLopez Antonio Tur López**.
 Publicado bajo licencia **[Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/)**.
 
 Repositorio oficial: [github.com/dratlopez](https://github.com/dratlopez)
