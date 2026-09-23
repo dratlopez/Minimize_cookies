@@ -10,7 +10,6 @@
   <img alt="versión" src="https://img.shields.io/badge/versi%C3%B3n-1.8-2FA968?style=flat-square">
   <img alt="licencia" src="https://img.shields.io/badge/licencia-CC%20BY--NC%204.0-E5484D?style=flat-square">
   <img alt="tampermonkey" src="https://img.shields.io/badge/funciona%20con-Tampermonkey-16212C?style=flat-square">
-  <img alt="idiomas" src="https://img.shields.io/badge/idiomas-ES%20%C2%B7%20EN%20%C2%B7%20FR%20%C2%B7%20DE%20%C2%B7%20IT%20%C2%B7%20PT%20%C2%B7%20NL-0F1720?style=flat-square">
 </p>
 
 <p align="center">
