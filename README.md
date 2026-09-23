@@ -72,7 +72,7 @@ The script never clicks blindly. It walks this priority list and stops at the fi
 
 ## 📄 License
 
-Copyright © 2026 **DrATLopez Andino Tur López**.
+Copyright © 2026 **DrATLopez Antonio Tur López**.
 Released under **[Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/)**.
 
 Official repository: [github.com/dratlopez](https://github.com/dratlopez)
