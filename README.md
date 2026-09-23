@@ -3,14 +3,14 @@
 </div>
 
 <p align="center">
-  <b>English</b> · <a href="./README.es.md">Español</a>
+  <b style="background-color:Gray;color:white">English·Español</b>
 </p>
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-1.8-2FA968?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-E5484D?style=flat-square">
   <img alt="tampermonkey" src="https://img.shields.io/badge/works%20with-Tampermonkey-16212C?style=flat-square">
-  <img alt="languages" src="https://img.shields.io/badge/languages-ES%20%C2%B7%20EN%20%C2%B7%20FR%20%C2%B7%20DE%20%C2%B7%20IT%20%C2%B7%20PT%20%C2%B7%20NL-0F1720?style=flat-square">
+  <p>Languages ES-EN</p>n
 </p>
 
 <p align="center">
