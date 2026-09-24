@@ -12,6 +12,9 @@
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.js
+// @downloadURL  https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.js
+// from github
 // ==/UserScript==
 
 (function () {
