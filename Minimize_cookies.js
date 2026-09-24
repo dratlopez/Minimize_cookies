@@ -3,12 +3,11 @@
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
-
 // ==UserScript==
-// @name         Minimize_cookies
+// @name         Minimize_Cookies
 // @namespace    http://tampermonkey.net/
-// @version      1.8
-// @description  Detecta banners/popups de cookies en varios idiomas, incluidos botones de una sola palabra ("Denegar"/"Reject") y banners renderizados dentro de Shadow DOM. Prueba primero las APIs nativas de rechazo de los CMP más comunes (OneTrust, Cookiebot, Didomi, Usercentrics) y selectores exactos conocidos; si no aplican, busca un botón de "rechazar/bloquear todo" por texto, o abre el panel de preferencias (incluye "Configuración de privacidad"), desactiva todas las opciones y confirma/guarda. Añade un botón en forma de rombo arriba a la derecha que se vuelve un círculo verde con check cuando el rechazo se confirma.
+// @version      1.9
+// @description  Detecta banners/popups de cookies en varios idiomas, con verificación estricta anti-falsos-positivos (exige mención literal de "cookie" + aspecto de overlay/modal + interruptor o botón reconocible), incluidos botones de una sola palabra ("Denegar"/"Reject") y banners renderizados dentro de Shadow DOM. Prueba primero las APIs nativas de rechazo de los CMP más comunes (OneTrust, Cookiebot, Didomi, Usercentrics) y selectores exactos conocidos; si no aplican, busca un botón de "rechazar/bloquear todo" por texto, o abre el panel de preferencias, desactiva todas las opciones y confirma/guarda. Añade un botón en forma de rombo arriba a la derecha que se vuelve un círculo verde con check cuando el rechazo se confirma.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -33,14 +32,20 @@
     'consenso', 'privacidade', 'dados pessoais', 'toestemming', 'privacybeleid'
   ];
 
-  // Selectores típicos de CMPs conocidos (OneTrust, Didomi, Quantcast, Cookiebot, TrustArc, Sourcepoint, etc.)
-  const KNOWN_BANNER_SELECTORS = [
+  // Selectores de CMPs concretos: muy específicos, prácticamente nunca dan falso positivo
+  const TRUSTED_BANNER_SELECTORS = [
     '#onetrust-banner-sdk', '#onetrust-consent-sdk',
     '.qc-cmp2-container', '.qc-cmp2-summary-buttons',
     '.didomi-popup-container', '#didomi-host',
     '#CybotCookiebotDialog',
     '#truste-consent-track',
-    '.sp_choice_type_11', '.message-container',
+    '.sp_choice_type_11', '.message-container'
+  ];
+
+  // Selectores genéricos por atributo: útiles, pero al ser tan amplios
+  // (cualquier "id/class" que contenga "cookie" o "consent") necesitan
+  // una verificación extra antes de confiar en ellos (ver isConfirmedCookieBanner).
+  const GENERIC_BANNER_SELECTORS = [
     '[id*="consent"]', '[class*="consent"]',
     '[id*="cookie"]', '[class*="cookie"]',
     '[aria-label*="cookie" i]', '[aria-label*="consent" i]'
@@ -198,9 +203,59 @@
     );
   }
 
+  // Un elemento solo se considera un banner de cookies "confirmado" si:
+  // 1) menciona literalmente la palabra "cookie" (prácticamente universal,
+  //    incluso en banners en otros idiomas), Y
+  // 2) tiene pinta de overlay/modal (fixed, sticky, role=dialog, o un bloque
+  //    position:absolute que cubre buena parte del viewport) — así se
+  //    descartan secciones normales de contenido que casualmente mencionan
+  //    "cookies" o "privacidad" en un enlace del pie de página, Y
+  // 3) contiene algún interruptor/checkbox O un botón reconocible de
+  //    aceptar/rechazar/preferencias.
+  function looksLikeOverlay(el) {
+    let style;
+    try {
+      style = window.getComputedStyle(el);
+    } catch (e) {
+      return false;
+    }
+    if (style.position === 'fixed' || style.position === 'sticky') return true;
+    if (el.getAttribute('role') === 'dialog' || el.getAttribute('role') === 'alertdialog') return true;
+    if (style.position === 'absolute') {
+      const rect = el.getBoundingClientRect();
+      const vw = window.innerWidth || 1;
+      const vh = window.innerHeight || 1;
+      if (rect.width / vw > 0.4 && rect.height / vh > 0.12) return true;
+    }
+    return false;
+  }
+
+  function isConfirmedCookieBanner(el) {
+    if (!isVisible(el)) return false;
+    const txt = normalize(el.textContent).slice(0, 3000);
+    if (!txt || txt.length < 20) return false;
+
+    const mentionsCookie = txt.includes('cookie'); // cubre "cookie" y "cookies"
+    if (!mentionsCookie) return false;
+
+    if (!looksLikeOverlay(el)) return false;
+
+    const hasToggle = queryDeep(
+      el,
+      'input[type="checkbox"], [role="switch"], [class*="toggle" i], [class*="switch" i]'
+    ).length > 0;
+    const hasActionButton =
+      !!findKnownRejectButton(el) ||
+      !!findButtonByHints(el, REJECT_ALL_HINTS) ||
+      !!findButtonByHints(el, OPEN_PREFERENCES_HINTS) ||
+      !!findButtonByHints(el, CONFIRM_BUTTON_HINTS);
+
+    return hasToggle || hasActionButton;
+  }
+
   function findBanner() {
-    // 1) Probar selectores conocidos primero
-    for (const sel of KNOWN_BANNER_SELECTORS) {
+    // 1) Selectores de CMPs muy específicos: casi nunca dan falso positivo
+    for (const sel of TRUSTED_BANNER_SELECTORS) {
       const els = document.querySelectorAll(sel);
       for (const el of els) {
         if (isVisible(el) && el.textContent && el.textContent.length > 30) {
@@ -209,23 +264,24 @@
       }
     }
 
-    // 2) Heurística genérica: buscar overlays/modales grandes con texto de cookies
+    // 2) Selectores genéricos por atributo: exigimos la verificación completa
+    for (const sel of GENERIC_BANNER_SELECTORS) {
+      let els = [];
+      try {
+        els = document.querySelectorAll(sel);
+      } catch (e) { /* selector no soportado, seguimos */ }
+      for (const el of els) {
+        if (isConfirmedCookieBanner(el)) return el;
+      }
+    }
+
+    // 3) Heurística genérica de último recurso: overlays grandes que
+    //    mencionan "cookie" y tienen pinta real de banner de consentimiento
     const candidates = document.querySelectorAll('div, section, aside');
     for (const el of candidates) {
-      if (!isVisible(el)) continue;
       const rect = el.getBoundingClientRect();
       if (rect.width < 200 || rect.height < 100) continue;
-
-      const txt = normalize(el.textContent).slice(0, 2000);
-      const hasHint = BANNER_TEXT_HINTS.some((h) => txt.includes(normalize(h)));
-      const hasToggle = queryDeep(
-        el,
-        'input[type="checkbox"], [role="switch"], [class*="toggle" i], [class*="switch" i]'
-      ).length > 0;
-
-      if (hasHint && hasToggle) {
-        return el;
-      }
+      if (isConfirmedCookieBanner(el)) return el;
     }
     return null;
   }
