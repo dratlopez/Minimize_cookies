@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./banner.svg" width="720" alt="Minimize Cookies">
+  <img src="./Minimize_cookies.png" width="360" alt="Minimize Cookies">
 </div>
 
 <p align="center">
