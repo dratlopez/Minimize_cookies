@@ -6,7 +6,7 @@
 // ==UserScript==
 // @name         Minimize_Cookies
 // @namespace    http://tampermonkey.net/
-// @version      1.9
+// @version      2.2
 // @description  Detecta banners/popups de cookies en varios idiomas, con verificación estricta anti-falsos-positivos (exige mención literal de "cookie" + aspecto de overlay/modal + interruptor o botón reconocible), incluidos botones de una sola palabra ("Denegar"/"Reject") y banners renderizados dentro de Shadow DOM. Prueba primero las APIs nativas de rechazo de los CMP más comunes (OneTrust, Cookiebot, Didomi, Usercentrics) y selectores exactos conocidos; si no aplican, busca un botón de "rechazar/bloquear todo" por texto, o abre el panel de preferencias, desactiva todas las opciones y confirma/guarda. Añade un botón en forma de rombo arriba a la derecha que se vuelve un círculo verde con check cuando el rechazo se confirma.
 // @author       you
 // @match        *://*/*
@@ -21,8 +21,34 @@
 
   const DIAMOND_ID = '__cookie_diamond_btn__';
   let currentBanner = null;
+  let currentConfidence = 'high'; // 'high' | 'medium' | 'low'
   let diamondEl = null;
   let actionInProgress = false;
+
+  // Modo de depuración: si es 'true', cada vez que se detecta un banner
+  // (real o falso positivo) se imprime en la consola (F12) qué elemento fue,
+  // qué texto contenía y qué botón/interruptor hizo que se considerara válido.
+  // Muy útil para diagnosticar falsos positivos en sitios concretos.
+  const DEBUG = true;
+
+  function debugLog(label, el, extra) {
+    if (!DEBUG) return;
+    try {
+      console.log(
+        '%c[cookie-diamond] ' + label,
+        'color:#e5484d;font-weight:bold;',
+        el,
+        Object.assign(
+          {
+            texto: (el.textContent || '').trim().slice(0, 200),
+            posicion: window.getComputedStyle(el).position,
+            html: el.outerHTML.slice(0, 300)
+          },
+          extra || {}
+        )
+      );
+    } catch (e) { /* nunca romper el script por un log */ }
+  }
 
   // --- Palabras clave para localizar el banner de cookies ---
   const BANNER_TEXT_HINTS = [
@@ -246,100 +272,151 @@
       el,
       'input[type="checkbox"], [role="switch"], [class*="toggle" i], [class*="switch" i]'
     ).length > 0;
-    const hasActionButton =
-      !!findKnownRejectButton(el) ||
-      !!findButtonByHints(el, REJECT_ALL_HINTS) ||
-      !!findButtonByHints(el, OPEN_PREFERENCES_HINTS) ||
-      !!findButtonByHints(el, CONFIRM_BUTTON_HINTS);
+    const knownRejectBtn = findKnownRejectButton(el);
+    const rejectHintBtn = findButtonByHints(el, REJECT_ALL_HINTS);
+    const openPrefsBtn = findButtonByHints(el, OPEN_PREFERENCES_HINTS);
+    const confirmBtn = findButtonByHints(el, CONFIRM_BUTTON_HINTS);
+    const hasActionButton = !!(knownRejectBtn || rejectHintBtn || openPrefsBtn || confirmBtn);
 
-    return hasToggle || hasActionButton;
+    const confirmed = hasToggle || hasActionButton;
+    if (confirmed) {
+      debugLog('Banner CONFIRMADO', el, {
+        motivo: hasToggle ? 'tiene interruptor/checkbox' : 'tiene botón de acción',
+        boton_rechazo_conocido: knownRejectBtn ? knownRejectBtn.textContent.trim().slice(0, 60) : null,
+        boton_rechazar_todo: rejectHintBtn ? rejectHintBtn.textContent.trim().slice(0, 60) : null,
+        boton_abrir_preferencias: openPrefsBtn ? openPrefsBtn.textContent.trim().slice(0, 60) : null,
+        boton_confirmar: confirmBtn ? confirmBtn.textContent.trim().slice(0, 60) : null
+      });
+    }
+    return confirmed;
   }
 
   function findBanner() {
-    // 1) Selectores de CMPs muy específicos: casi nunca dan falso positivo
+    // 1) Selectores de CMPs muy específicos: casi nunca dan falso positivo → alta confianza
     for (const sel of TRUSTED_BANNER_SELECTORS) {
       const els = document.querySelectorAll(sel);
       for (const el of els) {
         if (isVisible(el) && el.textContent && el.textContent.length > 30) {
-          return el;
+          return { el, confidence: 'high' };
         }
       }
     }
 
-    // 2) Selectores genéricos por atributo: exigimos la verificación completa
+    // 2) Selectores genéricos por atributo, verificados a fondo → confianza media
     for (const sel of GENERIC_BANNER_SELECTORS) {
       let els = [];
       try {
         els = document.querySelectorAll(sel);
       } catch (e) { /* selector no soportado, seguimos */ }
       for (const el of els) {
-        if (isConfirmedCookieBanner(el)) return el;
+        if (isConfirmedCookieBanner(el)) return { el, confidence: 'medium' };
       }
     }
 
-    // 3) Heurística genérica de último recurso: overlays grandes que
-    //    mencionan "cookie" y tienen pinta real de banner de consentimiento
+    // 3) Heurística genérica de último recurso: cualquier bloque grande que
+    //    mencione "cookie" y tenga pinta de overlay. Esta capa puede
+    //    confundirse con contenido normal que simplemente habla de cookies
+    //    (por ejemplo, el propio historial de un chat sobre este script),
+    //    así que se marca como confianza BAJA y nunca actúa sola.
     const candidates = document.querySelectorAll('div, section, aside');
     for (const el of candidates) {
       const rect = el.getBoundingClientRect();
       if (rect.width < 200 || rect.height < 100) continue;
-      if (isConfirmedCookieBanner(el)) return el;
+      if (isConfirmedCookieBanner(el)) return { el, confidence: 'low' };
     }
     return null;
   }
 
-  // --- Crear el botón rombo ---
-  function createDiamondButton() {
-    if (document.getElementById(DIAMOND_ID)) return document.getElementById(DIAMOND_ID);
+  // Colores de fondo de la carita según el nivel de confianza (el borde y los
+  // rasgos —ojos, boca— se mantienen siempre oscuros, como en el diseño original)
+  const CONFIDENCE_STYLE = {
+    high:   { base: '#cb355c', hover: '#a82a4c', title: 'Rechazar todas las cookies' },
+    medium: { base: '#c9791c', hover: '#a8620f', title: 'Posible banner de cookies — pulsa para intentar rechazarlo' },
+    low:    { base: '#5b6b78', hover: '#465158', title: 'Detección poco fiable: puede no ser un banner real. Pulsar solo lo descarta, no realiza ninguna acción.' }
+  };
+  const FACE_BORDER = '#28101a';
+
+  // --- Crear el botón con la carita (boca torcida) ---
+  function createDiamondButton(confidence) {
+    const existing = document.getElementById(DIAMOND_ID);
+    if (existing) return existing;
+
+    const style = CONFIDENCE_STYLE[confidence] || CONFIDENCE_STYLE.high;
 
     const btn = document.createElement('div');
     btn.id = DIAMOND_ID;
-    btn.title = 'Rechazar todas las cookies';
+    btn.dataset.confidence = confidence;
+    btn.title = style.title;
     btn.style.cssText = `
       position: fixed;
       top: 40px;
       right: 40px;
       width: 46px;
       height: 46px;
-      background: #d32f2f;
-      transform: rotate(45deg);
+      background: ${style.base};
+      border-radius: 50%;
       z-index: 2147483647;
       cursor: pointer;
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-      border: 2px solid #fff;
-      transition: transform 0.15s ease, background 0.15s ease, border-radius 0.3s ease;
+      border: 3px solid ${FACE_BORDER};
+      transition: transform 0.15s ease, background 0.15s ease;
     `;
     const onEnter = () => {
-      btn.style.transform = 'rotate(45deg) scale(1.1)';
-      btn.style.background = '#b71c1c';
+      const s = CONFIDENCE_STYLE[btn.dataset.confidence] || CONFIDENCE_STYLE.high;
+      btn.style.transform = 'scale(1.1)';
+      btn.style.background = s.hover;
     };
     const onLeave = () => {
-      btn.style.transform = 'rotate(45deg) scale(1)';
-      btn.style.background = '#d32f2f';
+      const s = CONFIDENCE_STYLE[btn.dataset.confidence] || CONFIDENCE_STYLE.high;
+      btn.style.transform = 'scale(1)';
+      btn.style.background = s.base;
     };
     btn.addEventListener('mouseenter', onEnter);
     btn.addEventListener('mouseleave', onLeave);
     btn._hoverHandlers = { onEnter, onLeave };
 
-    // "X" dentro del rombo (contra-rotada para que se vea recta)
-    const inner = document.createElement('div');
-    inner.style.cssText = `
+    // Rasgos de la carita, reescalados desde el diseño original (220px → 46px)
+    const face = document.createElement('div');
+    face.className = 'diamond-face-parts';
+    face.style.cssText = 'position:absolute; inset:0;';
+    face.innerHTML = `
+      <div style="position:absolute; width:6px; height:6px; left:10px; top:17px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:6px; height:6px; right:10px; top:17px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:16px; height:3px; left:15px; top:30px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(-18deg);"></div>
+    `;
+    btn.appendChild(face);
+
+    // Check de éxito, oculto hasta que se confirme el rechazo
+    const check = document.createElement('div');
+    check.className = 'diamond-success-check';
+    check.style.cssText = `
       position: absolute;
       top: 50%; left: 50%;
-      transform: translate(-50%, -50%) rotate(-45deg);
+      transform: translate(-50%, -50%);
       color: #fff;
       font-size: 20px;
       font-weight: bold;
       font-family: sans-serif;
       user-select: none;
+      display: none;
     `;
-    inner.textContent = '✕';
-    btn.appendChild(inner);
+    check.textContent = '✓';
+    btn.appendChild(check);
 
     btn.addEventListener('click', onDiamondClick);
 
     document.body.appendChild(btn);
     return btn;
+  }
+
+  // Actualiza el color/tooltip de una carita ya existente si su confianza cambia
+  // (por ejemplo, la página termina de cargar y aparece un selector más fiable)
+  function updateDiamondConfidence(btn, confidence) {
+    if (!btn || btn.dataset.success === 'true') return;
+    btn.dataset.confidence = confidence;
+    const style = CONFIDENCE_STYLE[confidence] || CONFIDENCE_STYLE.high;
+    btn.title = style.title;
+    btn.style.background = style.base;
   }
 
   function removeDiamondButton() {
@@ -352,7 +429,7 @@
     }
   }
 
-  // Convierte el rombo en un círculo verde para indicar éxito, y lo retira poco después
+  // Convierte la carita en un círculo verde con check para indicar éxito, y la retira poco después
   function showSuccessAndRemove(btn) {
     if (!btn) return;
     btn.removeEventListener('click', onDiamondClick);
@@ -362,15 +439,12 @@
     }
     btn.style.cursor = 'default';
     btn.style.background = '#2e7d32';
-    btn.style.borderRadius = '50%';
-    // Contrarrestamos la rotación de 45º del rombo para que quede un círculo perfecto
-    btn.style.transform = 'rotate(0deg)';
+    btn.style.border = '3px solid #1b5e20';
 
-    const inner = btn.querySelector('div');
-    if (inner) {
-      inner.style.transform = 'translate(-50%, -50%) rotate(0deg)';
-      inner.textContent = '✓';
-    }
+    const face = btn.querySelector('.diamond-face-parts');
+    if (face) face.style.display = 'none';
+    const check = btn.querySelector('.diamond-success-check');
+    if (check) check.style.display = 'block';
 
     setTimeout(() => {
       btn.style.transition = 'opacity 0.4s ease';
@@ -413,7 +487,7 @@
       });
   }
 
-
+  
   function hideBanner(banner) {
     // Forzamos la ocultación del banner si aún sigue visible
     if (banner && document.body.contains(banner) && isVisible(banner)) {
@@ -563,7 +637,7 @@
       if (openBtn) {
         openBtn.click();
         setTimeout(() => {
-          const newBanner = findBanner() || banner;
+          const newBanner = (findBanner() || {}).el || banner;
           attemptReject(newBanner, btn, depth + 1);
         }, 500);
         return;
@@ -575,8 +649,20 @@
   }
 
   function onDiamondClick() {
-    const banner = currentBanner || findBanner();
     const btn = document.getElementById(DIAMOND_ID);
+    const confidence = (btn && btn.dataset.confidence) || currentConfidence;
+
+    // Confianza BAJA: no hacemos ningún clic real en la página. Podría no
+    // ser un banner de cookies en absoluto (p. ej. la propia conversación
+    // menciona la palabra "cookie"), así que pulsar el rombo solo lo retira.
+    if (confidence === 'low') {
+      debugLog('Rombo de baja confianza descartado sin ejecutar ninguna acción', btn || document.body);
+      currentBanner = null;
+      removeDiamondButton();
+      return;
+    }
+
+    const banner = currentBanner || (findBanner() || {}).el;
     if (!banner) {
       removeDiamondButton();
       return;
@@ -588,11 +674,17 @@
   // --- Observador que detecta la aparición del banner ---
   function checkForBanner() {
     if (actionInProgress) return;
-    const banner = findBanner();
-    if (banner && banner !== currentBanner) {
-      currentBanner = banner;
-      diamondEl = createDiamondButton();
-    } else if (!banner && currentBanner) {
+    const result = findBanner();
+    if (result && result.el !== currentBanner) {
+      currentBanner = result.el;
+      currentConfidence = result.confidence;
+      diamondEl = createDiamondButton(result.confidence);
+    } else if (result && result.el === currentBanner && result.confidence !== currentConfidence) {
+      // Mismo elemento, pero cambió el nivel de confianza (p. ej. ahora
+      // coincide también con un selector más fiable): actualizamos el color.
+      currentConfidence = result.confidence;
+      updateDiamondConfidence(document.getElementById(DIAMOND_ID), result.confidence);
+    } else if (!result && currentBanner) {
       currentBanner = null;
       removeDiamondButton();
     }
