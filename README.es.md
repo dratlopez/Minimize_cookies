@@ -67,6 +67,7 @@ El script nunca hace clics a ciegas. Recorre esta lista de prioridad y se detien
 ## ⚠️ Limitaciones honestas
 
 - No existe una solución universal al 100%: algunos banners totalmente personalizados pueden no estar reconocidos todavía.
+- No elimina ninguna cookie cuando la alternativa es la suscripción al sitio web.
 - El indicador verde certifica que se ejecutó una acción de rechazo real; no puede verificar del lado del servidor qué hace la web con esa preferencia.
 - ¿Encontraste una web donde falla? Abre un [issue](https://github.com/dratlopez) con una captura del banner — cuantas más variantes se documenten, más fiable se vuelve esto.
 
