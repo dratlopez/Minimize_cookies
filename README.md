@@ -67,6 +67,7 @@ The script never clicks blindly. It walks this priority list and stops at the fi
 ## ⚠️ Honest Limitations
 
 - There's no universal 100% solution — some fully custom banners may not be recognized yet.
+- It doesn't remove any cookie in susctiption sites.
 - The green indicator confirms a real rejection action ran; it can't verify server-side what the site actually does with that preference.
 - Found a site where it fails? Open an [issue](https://github.com/dratlopez) with a screenshot of the banner — the more variants get documented, the more reliable this gets.
 
