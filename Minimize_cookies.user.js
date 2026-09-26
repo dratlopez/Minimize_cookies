@@ -12,8 +12,8 @@
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.js
-// @downloadURL  https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.js
+// @updateURL    https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.user.js
+// @downloadURL  https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies..userjs
 // ==/UserScript==
 
 (function () {
