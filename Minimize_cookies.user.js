@@ -7,8 +7,8 @@
 // ==UserScript==
 // @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net (API nativa __cmp + selector #cmpbox). Corrige un bug de precisión que podía confundir un CONTENEDOR de varios botones con un botón individual. Incluye panel de depuración visible en pantalla (DEBUG=true) con botón de copiar, soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
+// @version      2.5
+// @description  Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. El panel de depuración en pantalla (DEBUG=true) ahora acumula un historial completo de cada paso del proceso de rechazo (API nativa probada, botones encontrados, resultado final), no solo la detección del banner — pensado para diagnosticar en móvil sin consola. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -31,21 +31,11 @@
   // se considerara válido. El panel es útil en móvil, donde no hay consola.
   const DEBUG = true;
   const DEBUG_PANEL_ID = '__cookie_diamond_debug_panel__';
+  let debugMessages = [];
 
-  function showDebugPanel(label, el, extra) {
+  function renderDebugPanel() {
     try {
-      const info = Object.assign(
-        {
-          etiqueta: label,
-          texto: (el.textContent || '').trim().slice(0, 200),
-          posicion: window.getComputedStyle(el).position,
-          confianza: currentConfidence,
-          url: location.href,
-          html: el.outerHTML.slice(0, 400)
-        },
-        extra || {}
-      );
-      const jsonText = JSON.stringify(info, null, 2);
+      const fullText = debugMessages.join('\n\n---\n\n');
 
       let panel = document.getElementById(DEBUG_PANEL_ID);
       if (!panel) {
@@ -77,19 +67,24 @@
       panel.innerHTML = '';
 
       const bar = document.createElement('div');
-      bar.style.cssText = 'display:flex; gap:8px; margin-bottom:6px;';
+      bar.style.cssText = 'display:flex; gap:8px; margin-bottom:6px; position:sticky; top:0;';
 
       const copyBtn = document.createElement('button');
-      copyBtn.textContent = '📋 Copiar';
+      copyBtn.textContent = '📋 Copiar todo';
       copyBtn.style.cssText = 'font:inherit; font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #e5484d; background:#1a2733; color:#fff;';
       copyBtn.addEventListener('click', () => {
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(jsonText).then(() => {
+          navigator.clipboard.writeText(fullText).then(() => {
             copyBtn.textContent = '✓ Copiado';
-            setTimeout(() => { copyBtn.textContent = '📋 Copiar'; }, 1500);
+            setTimeout(() => { copyBtn.textContent = '📋 Copiar todo'; }, 1500);
           }).catch(() => { copyBtn.textContent = '⚠️ Error al copiar'; });
         }
       });
+
+      const clearBtn = document.createElement('button');
+      clearBtn.textContent = '🗑️ Vaciar';
+      clearBtn.style.cssText = 'font:inherit; font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #444; background:#1a2733; color:#fff;';
+      clearBtn.addEventListener('click', () => { debugMessages = []; renderDebugPanel(); });
 
       const closeBtn = document.createElement('button');
       closeBtn.textContent = '✕ Cerrar';
@@ -97,13 +92,28 @@
       closeBtn.addEventListener('click', () => panel.remove());
 
       bar.appendChild(copyBtn);
+      bar.appendChild(clearBtn);
       bar.appendChild(closeBtn);
       panel.appendChild(bar);
 
       const pre = document.createElement('div');
-      pre.textContent = jsonText;
+      pre.textContent = fullText;
       panel.appendChild(pre);
+
+      panel.scrollTop = panel.scrollHeight;
     } catch (e) { /* nunca romper el script por un panel de depuración */ }
+  }
+
+  // Añade una línea de texto simple al historial (trazas del proceso de
+  // rechazo: qué paso se intentó, si encontró botón, si hubo error...).
+  function debugTrace(message) {
+    if (!DEBUG) return;
+    try {
+      console.log('%c[cookie-diamond] ' + message, 'color:#c9791c;');
+    } catch (e) { /* no romper por esto */ }
+    debugMessages.push('[' + new Date().toLocaleTimeString() + '] ' + message);
+    if (debugMessages.length > 40) debugMessages = debugMessages.slice(-40);
+    renderDebugPanel();
   }
 
   function debugLog(label, el, extra) {
@@ -123,7 +133,22 @@
         )
       );
     } catch (e) { /* nunca romper el script por un log */ }
-    showDebugPanel(label, el, extra);
+
+    try {
+      const info = Object.assign(
+        {
+          etiqueta: label,
+          texto: (el.textContent || '').trim().slice(0, 200),
+          posicion: window.getComputedStyle(el).position,
+          url: location.href,
+          html: el.outerHTML.slice(0, 400)
+        },
+        extra || {}
+      );
+      debugMessages.push(JSON.stringify(info, null, 2));
+      if (debugMessages.length > 40) debugMessages = debugMessages.slice(-40);
+      renderDebugPanel();
+    } catch (e) { /* nunca romper el script por un panel de depuración */ }
   }
 
   // --- Palabras clave para localizar el banner de cookies ---
@@ -595,6 +620,8 @@
   function finalize(banner, btn, actuallyRejected) {
     hideBanner(banner);
     actionInProgress = false;
+    debugTrace('FINALIZE — actuallyRejected=' + actuallyRejected +
+      ', ¿banner sigue visible tras hideBanner()? ' + isVisible(banner));
     if (actuallyRejected) {
       btn.dataset.success = 'true';
       showSuccessAndRemove(btn);
@@ -612,17 +639,23 @@
       if (window.OneTrust && typeof window.OneTrust.RejectAll === 'function') {
         window.OneTrust.RejectAll();
         if (typeof window.OneTrust.Close === 'function') window.OneTrust.Close();
+        debugTrace('API nativa: OneTrust.RejectAll() ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* seguimos con la siguiente API */ }
+    } catch (e) {
+      debugTrace('API nativa: OneTrust.RejectAll() lanzó un error: ' + e.message);
+    }
 
     // Cookiebot
     try {
       if (window.Cookiebot && typeof window.Cookiebot.submitCustomConsent === 'function') {
         window.Cookiebot.submitCustomConsent(false, false, false);
+        debugTrace('API nativa: Cookiebot.submitCustomConsent() ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* seguimos con la siguiente API */ }
+    } catch (e) {
+      debugTrace('API nativa: Cookiebot.submitCustomConsent() lanzó un error: ' + e.message);
+    }
 
     // Didomi
     try {
@@ -631,35 +664,51 @@
         if (window.Didomi.notice && typeof window.Didomi.notice.hide === 'function') {
           window.Didomi.notice.hide();
         }
+        debugTrace('API nativa: Didomi.setUserDisagreeToAll() ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* seguimos con la siguiente API */ }
+    } catch (e) {
+      debugTrace('API nativa: Didomi.setUserDisagreeToAll() lanzó un error: ' + e.message);
+    }
 
     // Usercentrics (versión nueva)
     try {
       if (window.__ucCmp && typeof window.__ucCmp.denyAllConsents === 'function') {
         window.__ucCmp.denyAllConsents();
+        debugTrace('API nativa: __ucCmp.denyAllConsents() ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* seguimos con la siguiente API */ }
+    } catch (e) {
+      debugTrace('API nativa: __ucCmp.denyAllConsents() lanzó un error: ' + e.message);
+    }
 
     // Usercentrics (versión legacy)
     try {
       if (window.UC_UI && typeof window.UC_UI.denyAllConsents === 'function') {
         window.UC_UI.denyAllConsents();
+        debugTrace('API nativa: UC_UI.denyAllConsents() ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* seguimos con la siguiente API */ }
+    } catch (e) {
+      debugTrace('API nativa: UC_UI.denyAllConsents() lanzó un error: ' + e.message);
+    }
 
     // consentmanager.net (identificable por el contenedor #cmpbox/#cmpwrapper)
     // API: __cmp('setConsent', Parameter, Callback, Async) — Parameter 0 = rechazar todo
     try {
       if (typeof window.__cmp === 'function') {
         window.__cmp('setConsent', 0, function () {}, false);
+        debugTrace('API nativa: __cmp(\'setConsent\', 0) ejecutada sin errores');
         return true;
       }
-    } catch (e) { /* ninguna API nativa disponible */ }
+    } catch (e) {
+      debugTrace('API nativa: __cmp(\'setConsent\', 0) lanzó un error: ' + e.message);
+    }
 
+    debugTrace('API nativa: ninguna API de CMP conocida detectada en window (' +
+      'OneTrust=' + (!!window.OneTrust) + ', Cookiebot=' + (!!window.Cookiebot) +
+      ', Didomi=' + (!!window.Didomi) + ', __ucCmp=' + (!!window.__ucCmp) +
+      ', UC_UI=' + (!!window.UC_UI) + ', __cmp=' + (typeof window.__cmp) + ')');
     return false;
   }
 
@@ -692,6 +741,8 @@
   }
 
   function attemptReject(banner, btn, depth) {
+    debugTrace('attemptReject — profundidad ' + depth + ', banner: ' + (banner ? banner.tagName + (banner.id ? '#' + banner.id : '') : 'null'));
+
     // 0) Antes de tocar el DOM, probar la API nativa del CMP si está disponible
     if (depth === 0 && tryNativeApiReject()) {
       setTimeout(() => finalize(banner, btn, true), 350);
@@ -701,12 +752,16 @@
     // 1) Prioridad máxima: un botón directo de "rechazar/bloquear todo"
     //    (primero por selector exacto conocido, luego por texto)
     const rejectBtn = findKnownRejectButton(banner) || findButtonByHints(banner, REJECT_ALL_HINTS);
+    debugTrace('Paso 1 — botón "rechazar todo": ' +
+      (rejectBtn ? 'ENCONTRADO → "' + rejectBtn.textContent.trim().slice(0, 50) + '"' : 'no encontrado'));
     if (rejectBtn) {
       rejectBtn.click();
       // Algunos CMPs (p.ej. Sourcepoint) solo marcan los interruptores como "desactivado"
       // con este enlace, y requieren pulsar además un botón de guardar/salir aparte.
       setTimeout(() => {
         const saveBtn = findButtonByHints(banner, CONFIRM_BUTTON_HINTS);
+        debugTrace('Paso 1 — botón guardar/salir tras el clic: ' +
+          (saveBtn ? 'ENCONTRADO → "' + saveBtn.textContent.trim().slice(0, 50) + '"' : 'no encontrado (no hacía falta)'));
         if (saveBtn) saveBtn.click();
         setTimeout(() => finalize(banner, btn, true), 350);
       }, 250);
@@ -718,10 +773,13 @@
       banner,
       'input[type="checkbox"], [role="switch"], [class*="toggle" i], [class*="switch" i]'
     );
+    debugTrace('Paso 2 — interruptores encontrados en el panel: ' + toggles.length);
     if (toggles.length > 0) {
       disableAllToggles(banner);
       setTimeout(() => {
         const confirmBtn = findButtonByHints(banner, CONFIRM_BUTTON_HINTS);
+        debugTrace('Paso 2 — botón confirmar/guardar: ' +
+          (confirmBtn ? 'ENCONTRADO → "' + confirmBtn.textContent.trim().slice(0, 50) + '"' : 'no encontrado'));
         if (confirmBtn) confirmBtn.click();
         setTimeout(() => finalize(banner, btn, !!confirmBtn), 350);
       }, 200);
@@ -731,6 +789,8 @@
     // 3) No hay ni "rechazar todo" ni interruptores: intentar abrir el panel de preferencias
     if (depth < 2) {
       const openBtn = findButtonByHints(banner, OPEN_PREFERENCES_HINTS);
+      debugTrace('Paso 3 — botón abrir preferencias: ' +
+        (openBtn ? 'ENCONTRADO → "' + openBtn.textContent.trim().slice(0, 50) + '"' : 'no encontrado'));
       if (openBtn) {
         openBtn.click();
         setTimeout(() => {
@@ -742,6 +802,7 @@
     }
 
     // 4) Sin ninguna opción reconocible: no podemos confirmar que se ha rechazado nada
+    debugTrace('Paso 4 — sin ninguna opción reconocible en ningún nivel. Abortando sin acción.');
     finalize(banner, btn, false);
   }
 
