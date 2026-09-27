@@ -1,19 +1,18 @@
 /*
-  Copyright (c) 2026 DrATLopez Antonio Tur López.
+  Copyright (c) 2026 DrATLopez Andino Tur López.
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
+
 // ==UserScript==
-// @name         Minimize_Cookies
+// @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.2
-// @description  Detecta banners/popups de cookies en varios idiomas, con verificación estricta anti-falsos-positivos (exige mención literal de "cookie" + aspecto de overlay/modal + interruptor o botón reconocible), incluidos botones de una sola palabra ("Denegar"/"Reject") y banners renderizados dentro de Shadow DOM. Prueba primero las APIs nativas de rechazo de los CMP más comunes (OneTrust, Cookiebot, Didomi, Usercentrics) y selectores exactos conocidos; si no aplican, busca un botón de "rechazar/bloquear todo" por texto, o abre el panel de preferencias, desactiva todas las opciones y confirma/guarda. Añade un botón en forma de rombo arriba a la derecha que se vuelve un círculo verde con check cuando el rechazo se confirma.
+// @version      2.4
+// @description  Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net (API nativa __cmp + selector #cmpbox). Corrige un bug de precisión que podía confundir un CONTENEDOR de varios botones con un botón individual. Incluye panel de depuración visible en pantalla (DEBUG=true) con botón de copiar, soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies.user.js
-// @downloadURL  https://raw.githubusercontent.com/dratlopez/Minimize_cookies/refs/heads/main/Minimize_cookies..userjs
 // ==/UserScript==
 
 (function () {
@@ -26,10 +25,86 @@
   let actionInProgress = false;
 
   // Modo de depuración: si es 'true', cada vez que se detecta un banner
-  // (real o falso positivo) se imprime en la consola (F12) qué elemento fue,
-  // qué texto contenía y qué botón/interruptor hizo que se considerara válido.
-  // Muy útil para diagnosticar falsos positivos en sitios concretos.
+  // (real o falso positivo) se imprime en la consola (F12) Y se muestra un
+  // panel visible en pantalla (abajo a la izquierda) con el mismo detalle:
+  // qué elemento fue, qué texto contenía y qué botón/interruptor hizo que
+  // se considerara válido. El panel es útil en móvil, donde no hay consola.
   const DEBUG = true;
+  const DEBUG_PANEL_ID = '__cookie_diamond_debug_panel__';
+
+  function showDebugPanel(label, el, extra) {
+    try {
+      const info = Object.assign(
+        {
+          etiqueta: label,
+          texto: (el.textContent || '').trim().slice(0, 200),
+          posicion: window.getComputedStyle(el).position,
+          confianza: currentConfidence,
+          url: location.href,
+          html: el.outerHTML.slice(0, 400)
+        },
+        extra || {}
+      );
+      const jsonText = JSON.stringify(info, null, 2);
+
+      let panel = document.getElementById(DEBUG_PANEL_ID);
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = DEBUG_PANEL_ID;
+        panel.style.cssText = `
+          position: fixed;
+          left: 10px;
+          bottom: 10px;
+          max-width: 90vw;
+          max-height: 45vh;
+          overflow: auto;
+          background: #0f1720;
+          color: #edf1f5;
+          border: 1px solid #e5484d;
+          border-radius: 8px;
+          padding: 10px;
+          font-family: monospace;
+          font-size: 11px;
+          line-height: 1.4;
+          z-index: 2147483647;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+          white-space: pre-wrap;
+          word-break: break-word;
+        `;
+        document.body.appendChild(panel);
+      }
+
+      panel.innerHTML = '';
+
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex; gap:8px; margin-bottom:6px;';
+
+      const copyBtn = document.createElement('button');
+      copyBtn.textContent = '📋 Copiar';
+      copyBtn.style.cssText = 'font:inherit; font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #e5484d; background:#1a2733; color:#fff;';
+      copyBtn.addEventListener('click', () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(jsonText).then(() => {
+            copyBtn.textContent = '✓ Copiado';
+            setTimeout(() => { copyBtn.textContent = '📋 Copiar'; }, 1500);
+          }).catch(() => { copyBtn.textContent = '⚠️ Error al copiar'; });
+        }
+      });
+
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕ Cerrar';
+      closeBtn.style.cssText = 'font:inherit; font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #444; background:#1a2733; color:#fff;';
+      closeBtn.addEventListener('click', () => panel.remove());
+
+      bar.appendChild(copyBtn);
+      bar.appendChild(closeBtn);
+      panel.appendChild(bar);
+
+      const pre = document.createElement('div');
+      pre.textContent = jsonText;
+      panel.appendChild(pre);
+    } catch (e) { /* nunca romper el script por un panel de depuración */ }
+  }
 
   function debugLog(label, el, extra) {
     if (!DEBUG) return;
@@ -48,6 +123,7 @@
         )
       );
     } catch (e) { /* nunca romper el script por un log */ }
+    showDebugPanel(label, el, extra);
   }
 
   // --- Palabras clave para localizar el banner de cookies ---
@@ -67,7 +143,8 @@
     '.didomi-popup-container', '#didomi-host',
     '#CybotCookiebotDialog',
     '#truste-consent-track',
-    '.sp_choice_type_11', '.message-container'
+    '.sp_choice_type_11', '.message-container',
+    '#cmpbox', '#cmpwrapper' // consentmanager.net
   ];
 
   // Selectores genéricos por atributo: útiles, pero al ser tan amplios
@@ -170,6 +247,11 @@
     for (const el of clickable) {
       const txt = normalize(el.textContent || el.value || '');
       if (!txt) continue;
+      // Un botón real casi nunca supera este largo; si lo supera, es señal de
+      // que el selector capturó un CONTENEDOR con varios botones dentro
+      // (p. ej. una clase "cmpboxbtns" coincide con [class*="btn"]), y su
+      // texto sería la concatenación de todas las etiquetas de esos botones.
+      if (txt.length > 80) continue;
       if (hints.some((hint) => txt.includes(normalize(hint)))) {
         return el;
       }
@@ -258,7 +340,7 @@
     return false;
   }
 
-  function isConfirmedCookieBanner(el) {
+  function isConfirmedCookieBanner(el, confidenceLabel) {
     if (!isVisible(el)) return false;
     const txt = normalize(el.textContent).slice(0, 3000);
     if (!txt || txt.length < 20) return false;
@@ -281,6 +363,7 @@
     const confirmed = hasToggle || hasActionButton;
     if (confirmed) {
       debugLog('Banner CONFIRMADO', el, {
+        confianza: confidenceLabel || '(sin determinar)',
         motivo: hasToggle ? 'tiene interruptor/checkbox' : 'tiene botón de acción',
         boton_rechazo_conocido: knownRejectBtn ? knownRejectBtn.textContent.trim().slice(0, 60) : null,
         boton_rechazar_todo: rejectHintBtn ? rejectHintBtn.textContent.trim().slice(0, 60) : null,
@@ -297,6 +380,10 @@
       const els = document.querySelectorAll(sel);
       for (const el of els) {
         if (isVisible(el) && el.textContent && el.textContent.length > 30) {
+          debugLog('Banner CONFIRMADO (selector de confianza alta)', el, {
+            confianza: 'alta',
+            selector_usado: sel
+          });
           return { el, confidence: 'high' };
         }
       }
@@ -309,7 +396,7 @@
         els = document.querySelectorAll(sel);
       } catch (e) { /* selector no soportado, seguimos */ }
       for (const el of els) {
-        if (isConfirmedCookieBanner(el)) return { el, confidence: 'medium' };
+        if (isConfirmedCookieBanner(el, 'media')) return { el, confidence: 'medium' };
       }
     }
 
@@ -322,7 +409,7 @@
     for (const el of candidates) {
       const rect = el.getBoundingClientRect();
       if (rect.width < 200 || rect.height < 100) continue;
-      if (isConfirmedCookieBanner(el)) return { el, confidence: 'low' };
+      if (isConfirmedCookieBanner(el, 'baja')) return { el, confidence: 'low' };
     }
     return null;
   }
@@ -562,6 +649,15 @@
         window.UC_UI.denyAllConsents();
         return true;
       }
+    } catch (e) { /* seguimos con la siguiente API */ }
+
+    // consentmanager.net (identificable por el contenedor #cmpbox/#cmpwrapper)
+    // API: __cmp('setConsent', Parameter, Callback, Async) — Parameter 0 = rechazar todo
+    try {
+      if (typeof window.__cmp === 'function') {
+        window.__cmp('setConsent', 0, function () {}, false);
+        return true;
+      }
     } catch (e) { /* ninguna API nativa disponible */ }
 
     return false;
@@ -575,7 +671,8 @@
     'button.didomi-continue-without-agreeing',
     '#didomi-notice-disagree-button',
     '#CybotCookiebotDialogBodyButtonDecline',
-    '#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll'
+    '#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll',
+    '.cmpboxbtnno' // consentmanager.net: botón "no / rechazar todo"
   ];
 
   function findKnownRejectButton(container) {
