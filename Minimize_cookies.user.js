@@ -3,12 +3,11 @@
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
-
 // ==UserScript==
 // @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.5
-// @description  Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. El panel de depuración en pantalla (DEBUG=true) ahora acumula un historial completo de cada paso del proceso de rechazo (API nativa probada, botones encontrados, resultado final), no solo la detección del banner — pensado para diagnosticar en móvil sin consola. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
+// @version      2.6
+// @description  CORRIGE un bug crítico de la v2.5: el panel de depuración podía entrar en un bucle infinito (el propio log disparaba el MutationObserver, que volvía a registrar, congelando la página). Ahora el observer ignora las mutaciones de su propia UI y cada banner solo se registra una vez. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado de cada paso del proceso de rechazo. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -32,6 +31,9 @@
   const DEBUG = true;
   const DEBUG_PANEL_ID = '__cookie_diamond_debug_panel__';
   let debugMessages = [];
+  // Evita registrar el MISMO elemento una y otra vez en cada sondeo del
+  // observer/interval (eso era lo que provocaba el bucle que colgaba la página).
+  const loggedBannerElements = new WeakSet();
 
   function renderDebugPanel() {
     try {
@@ -386,7 +388,8 @@
     const hasActionButton = !!(knownRejectBtn || rejectHintBtn || openPrefsBtn || confirmBtn);
 
     const confirmed = hasToggle || hasActionButton;
-    if (confirmed) {
+    if (confirmed && !loggedBannerElements.has(el)) {
+      loggedBannerElements.add(el);
       debugLog('Banner CONFIRMADO', el, {
         confianza: confidenceLabel || '(sin determinar)',
         motivo: hasToggle ? 'tiene interruptor/checkbox' : 'tiene botón de acción',
@@ -405,10 +408,13 @@
       const els = document.querySelectorAll(sel);
       for (const el of els) {
         if (isVisible(el) && el.textContent && el.textContent.length > 30) {
-          debugLog('Banner CONFIRMADO (selector de confianza alta)', el, {
-            confianza: 'alta',
-            selector_usado: sel
-          });
+          if (!loggedBannerElements.has(el)) {
+            loggedBannerElements.add(el);
+            debugLog('Banner CONFIRMADO (selector de confianza alta)', el, {
+              confianza: 'alta',
+              selector_usado: sel
+            });
+          }
           return { el, confidence: 'high' };
         }
       }
@@ -848,8 +854,18 @@
     }
   }
 
-  const observer = new MutationObserver(() => {
-    checkForBanner();
+  // Si TODAS las mutaciones de una tanda ocurren dentro de nuestra propia UI
+  // (la carita o el panel de depuración), las ignoramos — si no, cada vez que
+  // el propio script actualiza su panel de debug, se dispararía a sí mismo en bucle.
+  function isOwnUiNode(node) {
+    if (!node || node.nodeType !== 1) return !!(node && node.parentNode && isOwnUiNode(node.parentNode));
+    if (node.id === DIAMOND_ID || node.id === DEBUG_PANEL_ID) return true;
+    return !!(node.closest && node.closest('#' + DIAMOND_ID + ', #' + DEBUG_PANEL_ID));
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    const relevant = mutations.some((m) => !isOwnUiNode(m.target));
+    if (relevant) checkForBanner();
   });
 
   observer.observe(document.documentElement, {
