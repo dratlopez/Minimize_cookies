@@ -4,7 +4,7 @@
   Repositorio oficial: https://github.com/dratlopez
 */
 // ==UserScript==
-// @name         Minimize Cookies (carita boca torcida)
+// @name         Minimize_Cookies
 // @namespace    http://tampermonkey.net/
 // @version      2.6
 // @description  CORRIGE un bug crítico de la v2.5: el panel de depuración podía entrar en un bucle infinito (el propio log disparaba el MutationObserver, que volvía a registrar, congelando la página). Ahora el observer ignora las mutaciones de su propia UI y cada banner solo se registra una vez. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado de cada paso del proceso de rechazo. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
