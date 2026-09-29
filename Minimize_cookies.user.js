@@ -3,12 +3,11 @@
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
-
 // ==UserScript==
 // @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.8
-// @description  Corrige el log de descarte por confianza baja: mostraba el propio icono del script en vez del elemento real de la página que causó la detección, haciendo imposible diagnosticar casos como arena.ai. Añade el patrón "Aceptar solo cookies necesarias" (Liferay) a las pistas de rechazo, y una regla anti-contenedor que descarta candidatos a botón que también mencionan "aceptar todo"/"accept all". Al rendirse sin encontrar ninguna opción, limpia el backdrop del modal y restaura el scroll. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
+// @version      2.9
+// @description  Sube automáticamente de confianza BAJA a MEDIA cuando el propio botón encontrado por la heurística de último recurso menciona "cookie" en su texto (p. ej. "Manage Cookies"), como en los diálogos genéricos de Radix UI/shadcn sin ningún selector fijo al que agarrarse (arena.ai). Corrige el log de descarte por confianza baja, que mostraba el propio icono del script en vez del elemento real de la página. Añade el patrón "Aceptar solo cookies necesarias" (Liferay) y una regla anti-contenedor que descarta candidatos a botón que también mencionan "aceptar todo". Detecta banners de cookies en varios idiomas con soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -386,14 +385,14 @@
   }
 
   function isConfirmedCookieBanner(el, confidenceLabel) {
-    if (!isVisible(el)) return false;
+    if (!isVisible(el)) return { confirmed: false, buttonMentionsCookie: false };
     const txt = normalize(el.textContent).slice(0, 3000);
-    if (!txt || txt.length < 20) return false;
+    if (!txt || txt.length < 20) return { confirmed: false, buttonMentionsCookie: false };
 
     const mentionsCookie = txt.includes('cookie'); // cubre "cookie" y "cookies"
-    if (!mentionsCookie) return false;
+    if (!mentionsCookie) return { confirmed: false, buttonMentionsCookie: false };
 
-    if (!looksLikeOverlay(el)) return false;
+    if (!looksLikeOverlay(el)) return { confirmed: false, buttonMentionsCookie: false };
 
     const hasToggle = queryDeep(
       el,
@@ -405,19 +404,28 @@
     const confirmBtn = findButtonByHints(el, CONFIRM_BUTTON_HINTS);
     const hasActionButton = !!(knownRejectBtn || rejectHintBtn || openPrefsBtn || confirmBtn);
 
+    // Señal fuerte, independiente de que el resto de la página mencione
+    // "cookie": si el propio BOTÓN encontrado dice algo como "Manage Cookies"
+    // (en vez de un genérico "Save"/"Settings"), es muy poco probable que sea
+    // un falso positivo — así que esto puede subir la confianza a "media"
+    // aunque la capa de detección haya sido la heurística de último recurso.
+    const buttonMentionsCookie = [knownRejectBtn, rejectHintBtn, openPrefsBtn, confirmBtn]
+      .some((b) => b && normalize(b.textContent || '').includes('cookie'));
+
     const confirmed = hasToggle || hasActionButton;
     if (confirmed && !loggedBannerElements.has(el)) {
       loggedBannerElements.add(el);
       debugLog('Banner CONFIRMADO', el, {
         confianza: confidenceLabel || '(sin determinar)',
         motivo: hasToggle ? 'tiene interruptor/checkbox' : 'tiene botón de acción',
+        boton_menciona_cookie: buttonMentionsCookie,
         boton_rechazo_conocido: knownRejectBtn ? knownRejectBtn.textContent.trim().slice(0, 60) : null,
         boton_rechazar_todo: rejectHintBtn ? rejectHintBtn.textContent.trim().slice(0, 60) : null,
         boton_abrir_preferencias: openPrefsBtn ? openPrefsBtn.textContent.trim().slice(0, 60) : null,
         boton_confirmar: confirmBtn ? confirmBtn.textContent.trim().slice(0, 60) : null
       });
     }
-    return confirmed;
+    return { confirmed, buttonMentionsCookie };
   }
 
   function findBanner() {
@@ -445,7 +453,7 @@
         els = document.querySelectorAll(sel);
       } catch (e) { /* selector no soportado, seguimos */ }
       for (const el of els) {
-        if (isConfirmedCookieBanner(el, 'media')) return { el, confidence: 'medium' };
+        if (isConfirmedCookieBanner(el, 'media').confirmed) return { el, confidence: 'medium' };
       }
     }
 
@@ -453,12 +461,18 @@
     //    mencione "cookie" y tenga pinta de overlay. Esta capa puede
     //    confundirse con contenido normal que simplemente habla de cookies
     //    (por ejemplo, el propio historial de un chat sobre este script),
-    //    así que se marca como confianza BAJA y nunca actúa sola.
+    //    así que por defecto se marca como confianza BAJA y nunca actúa sola.
+    //    EXCEPCIÓN: si el propio botón encontrado menciona "cookie" en su
+    //    texto (p. ej. "Manage Cookies"), es una señal lo bastante fuerte
+    //    como para subirla a confianza MEDIA y sí actuar.
     const candidates = document.querySelectorAll('div, section, aside');
     for (const el of candidates) {
       const rect = el.getBoundingClientRect();
       if (rect.width < 200 || rect.height < 100) continue;
-      if (isConfirmedCookieBanner(el, 'baja')) return { el, confidence: 'low' };
+      const result = isConfirmedCookieBanner(el, 'baja');
+      if (result.confirmed) {
+        return { el, confidence: result.buttonMentionsCookie ? 'medium' : 'low' };
+      }
     }
     return null;
   }
