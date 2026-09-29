@@ -7,8 +7,8 @@
 // ==UserScript==
 // @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.7
-// @description  Añade el patrón "Aceptar solo cookies necesarias" (usado por banners Liferay como el de sede.mjusticia.gob.es) a las pistas de rechazo. Corrige la detección de botones para que ya no confunda un CONTENEDOR con varios botones (aceptar+rechazar+preferencias) con un botón individual: ahora se descarta cualquier candidato que también mencione "aceptar todo"/"accept all". Además, al rendirse sin encontrar ninguna opción, limpia mejor el fondo oscuro del modal (backdrop) y restaura el scroll de la página, evitando que quede bloqueada. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
+// @version      2.8
+// @description  Corrige el log de descarte por confianza baja: mostraba el propio icono del script en vez del elemento real de la página que causó la detección, haciendo imposible diagnosticar casos como arena.ai. Añade el patrón "Aceptar solo cookies necesarias" (Liferay) a las pistas de rechazo, y una regla anti-contenedor que descarta candidatos a botón que también mencionan "aceptar todo"/"accept all". Al rendirse sin encontrar ninguna opción, limpia el backdrop del modal y restaura el scroll. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -853,7 +853,10 @@
     // ser un banner de cookies en absoluto (p. ej. la propia conversación
     // menciona la palabra "cookie"), así que pulsar el rombo solo lo retira.
     if (confidence === 'low') {
-      debugLog('Rombo de baja confianza descartado sin ejecutar ninguna acción', btn || document.body);
+      debugLog(
+        'Rombo de baja confianza descartado sin ejecutar ninguna acción',
+        currentBanner || btn || document.body
+      );
       currentBanner = null;
       removeDiamondButton();
       return;
