@@ -3,11 +3,12 @@
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
   Repositorio oficial: https://github.com/dratlopez
 */
+
 // ==UserScript==
-// @name         Minimize_Cookies
+// @name         Minimize Cookies (carita boca torcida)
 // @namespace    http://tampermonkey.net/
-// @version      2.6
-// @description  CORRIGE un bug crítico de la v2.5: el panel de depuración podía entrar en un bucle infinito (el propio log disparaba el MutationObserver, que volvía a registrar, congelando la página). Ahora el observer ignora las mutaciones de su propia UI y cada banner solo se registra una vez. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado de cada paso del proceso de rechazo. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar. El icono flotante (carita con boca torcida) cambia de color según la confianza y se convierte en un círculo verde con check cuando el rechazo se confirma de verdad.
+// @version      2.7
+// @description  Añade el patrón "Aceptar solo cookies necesarias" (usado por banners Liferay como el de sede.mjusticia.gob.es) a las pistas de rechazo. Corrige la detección de botones para que ya no confunda un CONTENEDOR con varios botones (aceptar+rechazar+preferencias) con un botón individual: ahora se descarta cualquier candidato que también mencione "aceptar todo"/"accept all". Además, al rendirse sin encontrar ninguna opción, limpia mejor el fondo oscuro del modal (backdrop) y restaura el scroll de la página, evitando que quede bloqueada. Detecta banners/popups de cookies en varios idiomas con un sistema de 3 niveles de confianza y soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -212,6 +213,8 @@
     'denegar todas', 'bloquear todo', 'bloquear todas', 'solo necesarias',
     'solo esenciales', 'únicamente necesarias', 'unicamente necesarias',
     'continuar sin aceptar', 'no aceptar todo', 'rechazar cookies',
+    'aceptar solo cookies necesarias', 'aceptar solo las necesarias',
+    'aceptar unicamente las necesarias', 'aceptar únicamente las necesarias',
     'denegar', 'rechazar', 'bloquear', 'declinar',
     // Inglés
     'reject all', 'decline all', 'refuse all', 'deny all', 'disagree',
@@ -265,6 +268,18 @@
     'voorkeuren beheren', 'instellingen'
   ];
 
+  // Frases usadas solo para DESCARTAR candidatos: si un elemento que estamos
+  // evaluando como "botón de rechazo/preferencias/confirmar" menciona también
+  // una de estas frases de "aceptar todo", es señal segura de que hemos capturado
+  // un CONTENEDOR con varios botones dentro (aceptar + rechazar + preferencias...),
+  // no un botón individual — un botón real nunca ofrece ambas acciones a la vez.
+  const ACCEPT_ALL_WRAPPER_HINTS = [
+    'aceptar todo', 'aceptar todas', 'aceitar tudo', 'accept all',
+    'autorizar todo', 'autorizar todas', 'permitir todas', 'permitir todo',
+    'tout accepter', 'alle akzeptieren', 'accetta tutto', 'alles accepteren',
+    'aceptar y continuar'
+  ];
+
   // Busca dentro de un contenedor el primer botón cuyo texto coincida con alguna de las pistas dadas
   function findButtonByHints(container, hints) {
     const clickable = queryDeep(
@@ -278,7 +293,10 @@
       // que el selector capturó un CONTENEDOR con varios botones dentro
       // (p. ej. una clase "cmpboxbtns" coincide con [class*="btn"]), y su
       // texto sería la concatenación de todas las etiquetas de esos botones.
-      if (txt.length > 80) continue;
+      if (txt.length > 60) continue;
+      // Si además menciona "aceptar todo" y similares, es casi seguro un
+      // contenedor con varios botones, no el botón individual que buscamos.
+      if (ACCEPT_ALL_WRAPPER_HINTS.some((h) => txt.includes(normalize(h)))) continue;
       if (hints.some((hint) => txt.includes(normalize(hint)))) {
         return el;
       }
@@ -611,16 +629,31 @@
     if (banner && document.body.contains(banner) && isVisible(banner)) {
       banner.style.setProperty('display', 'none', 'important');
     }
-    // Eliminar overlays/backdrops comunes que bloquean el scroll
-    document
-      .querySelectorAll('[class*="overlay" i], [class*="backdrop" i]')
-      .forEach((el) => {
-        const txt = normalize(el.textContent).slice(0, 500);
-        if (BANNER_TEXT_HINTS.some((h) => txt.includes(normalize(h)))) {
-          el.style.setProperty('display', 'none', 'important');
-        }
-      });
+
+    // Los "backdrop" (fondo oscuro tras un modal) casi nunca tienen texto
+    // propio, así que no podemos exigirles que mencionen "cookie": si están
+    // visibles, se ocultan directamente.
+    document.querySelectorAll('[class*="backdrop" i]').forEach((el) => {
+      if (isVisible(el)) el.style.setProperty('display', 'none', 'important');
+    });
+
+    // Los "overlay" genéricos sí pueden ser contenido legítimo de la página,
+    // así que ahí seguimos exigiendo que mencionen algo relacionado con cookies.
+    document.querySelectorAll('[class*="overlay" i]').forEach((el) => {
+      const txt = normalize(el.textContent).slice(0, 500);
+      if (BANNER_TEXT_HINTS.some((h) => txt.includes(normalize(h)))) {
+        el.style.setProperty('display', 'none', 'important');
+      }
+    });
+
+    // Restaurar el scroll: muchos modales bloquean body/html con una clase
+    // ("modal-open" es el patrón más común, de Bootstrap y derivados) además
+    // de con estilos inline.
+    document.body.classList.remove('modal-open');
+    document.documentElement.classList.remove('modal-open');
     document.body.style.overflow = '';
+    document.body.style.removeProperty('overflow');
+    document.documentElement.style.removeProperty('overflow');
   }
 
   function finalize(banner, btn, actuallyRejected) {
