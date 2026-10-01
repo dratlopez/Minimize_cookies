@@ -1,13 +1,14 @@
 /*
-  Copyright (c) 2026 DrATLopez Andino Tur López.
+  Copyright (c) 2026 DrATLopez Antonio Tur López.
   Todos los derechos reservados. / Licencia Creative Commons Atribución-NoComercial 4.0 (CC BY-NC 4.0)
-  Repositorio oficial: https://github.com/dratlopez
+  Repositorio oficial: https://github.com/dratlopez/Minimize_cookies
 */
+
 // ==UserScript==
-// @name         Minimize Cookies (carita boca torcida)
+// @name         Minimize_Cookies
 // @namespace    http://tampermonkey.net/
-// @version      2.9
-// @description  Sube automáticamente de confianza BAJA a MEDIA cuando el propio botón encontrado por la heurística de último recurso menciona "cookie" en su texto (p. ej. "Manage Cookies"), como en los diálogos genéricos de Radix UI/shadcn sin ningún selector fijo al que agarrarse (arena.ai). Corrige el log de descarte por confianza baja, que mostraba el propio icono del script en vez del elemento real de la página. Añade el patrón "Aceptar solo cookies necesarias" (Liferay) y una regla anti-contenedor que descarta candidatos a botón que también mencionan "aceptar todo". Detecta banners de cookies en varios idiomas con soporte para OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net. Panel de depuración en pantalla (DEBUG=true) con historial acumulado. Incluye soporte de Shadow DOM, y la cascada habitual: API nativa → selector conocido → texto multi-idioma → abrir preferencias → apagar todo y guardar.
+// @version      3.7
+// @description  Detecta banners de cookies en varios idiomas y los rechaza con un clic. Tres niveles de confianza (rojo/naranja/gris) según cómo de fiable es la detección; API nativa de OneTrust, Cookiebot, Didomi, Usercentrics y consentmanager.net antes que nada; si no, busca un botón de "rechazar todo" por texto en 8+ idiomas, o abre el panel de preferencias, apaga los interruptores y guarda. Auto-continuación: si el sitio tarda en cargar el siguiente paso (navegación real, no solo animación), el script sigue solo hasta terminar sin pedir un segundo clic. Caritas de estado: normal (pendiente) → enfadada (reintentando) → retry con cejas fruncidas (auto-continuando) → círculo verde con check (éxito confirmado). Soporte de Shadow DOM.
 // @author       you
 // @match        *://*/*
 // @run-at       document-idle
@@ -22,18 +23,27 @@
   let currentConfidence = 'high'; // 'high' | 'medium' | 'low'
   let diamondEl = null;
   let actionInProgress = false;
+  // Marca de tiempo de la última vez que attemptReject empezó a actuar sobre
+  // un banner ya confirmado como real (alta/media confianza). Cualquier panel
+  // que aparezca poco después (p. ej. tras pulsar "Manage Cookies" y que el
+  // sitio tarde en cargar el siguiente paso) hereda esa confianza, aunque su
+  // propio texto no diga "cookie" — porque es consecuencia directa de esa
+  // interacción, no una coincidencia de contenido no relacionado.
+  let recentCookieInteractionAt = 0;
+  const RECENT_INTERACTION_WINDOW_MS = 20000;
 
   // Modo de depuración: si es 'true', cada vez que se detecta un banner
   // (real o falso positivo) se imprime en la consola (F12) Y se muestra un
   // panel visible en pantalla (abajo a la izquierda) con el mismo detalle:
   // qué elemento fue, qué texto contenía y qué botón/interruptor hizo que
   // se considerara válido. El panel es útil en móvil, donde no hay consola.
-  const DEBUG = true;
+  const DEBUG = false;
   const DEBUG_PANEL_ID = '__cookie_diamond_debug_panel__';
   let debugMessages = [];
   // Evita registrar el MISMO elemento una y otra vez en cada sondeo del
   // observer/interval (eso era lo que provocaba el bucle que colgaba la página).
   const loggedBannerElements = new WeakSet();
+  const loggedPromotions = new WeakSet();
 
   function renderDebugPanel() {
     try {
@@ -471,7 +481,23 @@
       if (rect.width < 200 || rect.height < 100) continue;
       const result = isConfirmedCookieBanner(el, 'baja');
       if (result.confirmed) {
-        return { el, confidence: result.buttonMentionsCookie ? 'medium' : 'low' };
+        const recentInteraction = (Date.now() - recentCookieInteractionAt) < RECENT_INTERACTION_WINDOW_MS;
+        const promoted = result.buttonMentionsCookie || recentInteraction;
+        if (promoted && recentInteraction && !result.buttonMentionsCookie && !loggedPromotions.has(el)) {
+          loggedPromotions.add(el);
+          debugTrace('Confianza subida a MEDIA por interacción reciente con un banner real (hace ' +
+            (Date.now() - recentCookieInteractionAt) + 'ms), aunque su botón no diga "cookie"');
+        }
+        // autoContinue: este panel es, con toda probabilidad, la continuación
+        // directa del clic que el usuario YA dio (llegó por interacción
+        // reciente, no porque su propio botón mencione "cookie" por
+        // casualidad) — así que no hace falta pedir un segundo clic de
+        // confirmación, ya se dio permiso una vez para esta misma acción.
+        return {
+          el,
+          confidence: promoted ? 'medium' : 'low',
+          autoContinue: promoted && recentInteraction && !result.buttonMentionsCookie
+        };
       }
     }
     return null;
@@ -487,9 +513,23 @@
   const FACE_BORDER = '#28101a';
 
   // --- Crear el botón con la carita (boca torcida) ---
-  function createDiamondButton(confidence) {
+  // variant: 'normal' (boca torcida, la de siempre) | 'retry' (frunce marcado
+  // hacia abajo — para el icono que aparece SOLO, sin que el usuario pulse
+  // nada, cuando se auto-continúa tras una carita enfadada; así no repite
+  // la misma cara que ya vio en el paso anterior).
+  function createDiamondButton(confidence, variant) {
     const existing = document.getElementById(DIAMOND_ID);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.dataset.leaving === 'true') {
+        // Está a mitad de desvanecerse (éxito o enfadada): lo retiramos ya
+        // mismo para poder crear uno nuevo totalmente funcional, en vez de
+        // devolver una referencia que está a punto de desaparecer sola.
+        existing.remove();
+      } else {
+        return existing;
+      }
+    }
+    variant = variant || 'normal';
 
     const style = CONFIDENCE_STYLE[confidence] || CONFIDENCE_STYLE.high;
 
@@ -525,16 +565,50 @@
     btn.addEventListener('mouseleave', onLeave);
     btn._hoverHandlers = { onEnter, onLeave };
 
-    // Rasgos de la carita, reescalados desde el diseño original (220px → 46px)
+    // Rasgos de la carita NORMAL (boca torcida), reescalados desde el diseño
+    // original (220px → 46px). Visible solo si variant es 'normal'.
     const face = document.createElement('div');
     face.className = 'diamond-face-parts';
-    face.style.cssText = 'position:absolute; inset:0;';
+    face.style.cssText = 'position:absolute; inset:0;' + (variant === 'normal' ? '' : ' display:none;');
     face.innerHTML = `
       <div style="position:absolute; width:6px; height:6px; left:10px; top:17px; background:${FACE_BORDER}; border-radius:50%;"></div>
       <div style="position:absolute; width:6px; height:6px; right:10px; top:17px; background:${FACE_BORDER}; border-radius:50%;"></div>
       <div style="position:absolute; width:16px; height:3px; left:15px; top:30px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(-18deg);"></div>
     `;
     btn.appendChild(face);
+
+    // Rasgos de la carita RETRY: cejas fruncidas en V (como la enfadada) +
+    // boca en frunce marcado hacia abajo (dos segmentos formando un "∩",
+    // como 😡), en vez de la boca torcida normal. Visible solo si variant
+    // es 'retry'.
+    const retryFace = document.createElement('div');
+    retryFace.className = 'diamond-retry-face-parts';
+    retryFace.style.cssText = 'position:absolute; inset:0;' + (variant === 'retry' ? '' : ' display:none;');
+    retryFace.innerHTML = `
+      <div style="position:absolute; width:13px; height:3px; left:6px; top:13px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(18deg);"></div>
+      <div style="position:absolute; width:13px; height:3px; right:6px; top:13px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(-18deg);"></div>
+      <div style="position:absolute; width:6px; height:6px; left:10px; top:19px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:6px; height:6px; right:10px; top:19px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:9px; height:3px; left:11px; top:29px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(-25deg);"></div>
+      <div style="position:absolute; width:9px; height:3px; right:11px; top:29px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(25deg);"></div>
+    `;
+    btn.appendChild(retryFace);
+
+    // Rasgos de la carita ENFADADA: cejas fruncidas en V + boca recta.
+    // Se muestra un momento cuando un intento no termina en éxito, para
+    // avisar de que puede hacer falta pulsar otra vez (p. ej. mientras se
+    // carga un panel de preferencias lento). Oculta por defecto.
+    const angryFace = document.createElement('div');
+    angryFace.className = 'diamond-angry-face-parts';
+    angryFace.style.cssText = 'position:absolute; inset:0; display:none;';
+    angryFace.innerHTML = `
+      <div style="position:absolute; width:13px; height:3px; left:6px; top:13px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(18deg);"></div>
+      <div style="position:absolute; width:13px; height:3px; right:6px; top:13px; background:${FACE_BORDER}; border-radius:3px; transform:rotate(-18deg);"></div>
+      <div style="position:absolute; width:6px; height:6px; left:10px; top:19px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:6px; height:6px; right:10px; top:19px; background:${FACE_BORDER}; border-radius:50%;"></div>
+      <div style="position:absolute; width:16px; height:3px; left:15px; top:31px; background:${FACE_BORDER}; border-radius:3px;"></div>
+    `;
+    btn.appendChild(angryFace);
 
     // Check de éxito, oculto hasta que se confirme el rechazo
     const check = document.createElement('div');
@@ -582,6 +656,7 @@
   // Convierte la carita en un círculo verde con check para indicar éxito, y la retira poco después
   function showSuccessAndRemove(btn) {
     if (!btn) return;
+    btn.dataset.leaving = 'true';
     btn.removeEventListener('click', onDiamondClick);
     if (btn._hoverHandlers) {
       btn.removeEventListener('mouseenter', btn._hoverHandlers.onEnter);
@@ -593,10 +668,49 @@
 
     const face = btn.querySelector('.diamond-face-parts');
     if (face) face.style.display = 'none';
+    const retryFace = btn.querySelector('.diamond-retry-face-parts');
+    if (retryFace) retryFace.style.display = 'none';
     const check = btn.querySelector('.diamond-success-check');
     if (check) check.style.display = 'block';
 
     setTimeout(() => {
+      // Puede que ya lo hayamos sustituido antes de este momento (createDiamondButton
+      // descarta cualquier icono "leaving" en cuanto hace falta uno nuevo).
+      if (!document.body.contains(btn)) return;
+      btn.style.transition = 'opacity 0.4s ease';
+      btn.style.opacity = '0';
+      setTimeout(() => {
+        if (document.body.contains(btn)) btn.remove();
+        if (diamondEl === btn) diamondEl = null;
+      }, 400);
+    }, 1500);
+  }
+
+  // Muestra la carita enfadada un momento y luego retira el icono. Se usa
+  // cuando un intento termina SIN éxito pero puede necesitar otro clic más
+  // adelante (p. ej. un panel de preferencias que aún está cargando).
+  function showAngryAndRemove(btn) {
+    if (!btn || btn.dataset.success === 'true') return;
+    btn.dataset.leaving = 'true';
+    btn.removeEventListener('click', onDiamondClick);
+    if (btn._hoverHandlers) {
+      btn.removeEventListener('mouseenter', btn._hoverHandlers.onEnter);
+      btn.removeEventListener('mouseleave', btn._hoverHandlers.onLeave);
+    }
+    btn.style.cursor = 'default';
+    btn.title = 'No he podido completar el rechazo todavía. Puede que aparezca un nuevo icono cuando la página termine de cargar el panel.';
+
+    const face = btn.querySelector('.diamond-face-parts');
+    if (face) face.style.display = 'none';
+    const retryFace = btn.querySelector('.diamond-retry-face-parts');
+    if (retryFace) retryFace.style.display = 'none';
+    const angryFace = btn.querySelector('.diamond-angry-face-parts');
+    if (angryFace) angryFace.style.display = 'block';
+
+    setTimeout(() => {
+      // Igual que en showSuccessAndRemove: si ya nos sustituyeron por un
+      // icono nuevo mientras nos desvanecíamos, no hay nada que retirar aquí.
+      if (!document.body.contains(btn)) return;
       btn.style.transition = 'opacity 0.4s ease';
       btn.style.opacity = '0';
       setTimeout(() => {
@@ -679,7 +793,11 @@
       btn.dataset.success = 'true';
       showSuccessAndRemove(btn);
     } else {
-      removeDiamondButton();
+      // No se pudo completar: puede que haga falta un segundo clic más
+      // adelante (p. ej. un panel de preferencias que aún está cargando),
+      // así que avisamos con la carita enfadada en vez de desaparecer
+      // en silencio como si no hubiera pasado nada.
+      showAngryAndRemove(btn);
     }
   }
 
@@ -793,7 +911,33 @@
     return null;
   }
 
+  // Tras pulsar "abrir preferencias", el panel viejo puede tardar en cerrarse
+  // (animaciones de salida tipo Radix/shadcn) y seguir siendo técnicamente
+  // "visible" un instante. En vez de esperar un tiempo fijo y arriesgarnos a
+  // volver a capturar el mismo panel viejo, sondeamos activamente hasta ver
+  // uno DISTINTO, o hasta agotar el tiempo máximo.
+  function waitForDifferentBanner(oldEl, maxWaitMs, callback) {
+    const start = Date.now();
+    const poll = () => {
+      const res = findBanner();
+      const el = res && res.el;
+      if (el && el !== oldEl) {
+        debugTrace('Espera activa: panel NUEVO detectado tras ' + (Date.now() - start) + 'ms');
+        callback(el);
+        return;
+      }
+      if (Date.now() - start >= maxWaitMs) {
+        debugTrace('Espera activa: agotado el tiempo (' + maxWaitMs + 'ms) sin ver un panel distinto, sigo con el mismo');
+        callback(el || oldEl);
+        return;
+      }
+      setTimeout(poll, 200);
+    };
+    poll();
+  }
+
   function attemptReject(banner, btn, depth) {
+    recentCookieInteractionAt = Date.now();
     debugTrace('attemptReject — profundidad ' + depth + ', banner: ' + (banner ? banner.tagName + (banner.id ? '#' + banner.id : '') : 'null'));
 
     // 0) Antes de tocar el DOM, probar la API nativa del CMP si está disponible
@@ -846,10 +990,9 @@
         (openBtn ? 'ENCONTRADO → "' + openBtn.textContent.trim().slice(0, 50) + '"' : 'no encontrado'));
       if (openBtn) {
         openBtn.click();
-        setTimeout(() => {
-          const newBanner = (findBanner() || {}).el || banner;
+        waitForDifferentBanner(banner, 3000, (newBanner) => {
           attemptReject(newBanner, btn, depth + 1);
-        }, 500);
+        });
         return;
       }
     }
@@ -892,7 +1035,12 @@
     if (result && result.el !== currentBanner) {
       currentBanner = result.el;
       currentConfidence = result.confidence;
-      diamondEl = createDiamondButton(result.confidence);
+      diamondEl = createDiamondButton(result.confidence, result.autoContinue ? 'retry' : 'normal');
+      if (result.autoContinue) {
+        debugTrace('Auto-continuando sin esperar un segundo clic (continuación directa de la acción ya autorizada)');
+        actionInProgress = true;
+        attemptReject(currentBanner, diamondEl, 0);
+      }
     } else if (result && result.el === currentBanner && result.confidence !== currentConfidence) {
       // Mismo elemento, pero cambió el nivel de confianza (p. ej. ahora
       // coincide también con un selector más fiable): actualizamos el color.
